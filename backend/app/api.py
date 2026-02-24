@@ -1,24 +1,22 @@
 """FastAPI entry point for the IKMS RAG system."""
 
-import os
-import shutil
-from pathlib import Path
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from .models import QuestionRequest, QAResponse
 from .services.qa_service import answer_question
-from .core.retrieval.vector_store import index_documents
+from .core.retrieval.vector_store import index_documents_from_bytes
 
 app = FastAPI(title="IKMS RAG Agent System")
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Your frontend URL
+    allow_origins=["*"],  # Your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.post("/qa", response_model=QAResponse)
 async def qa_endpoint(request: QuestionRequest):
@@ -27,42 +25,44 @@ async def qa_endpoint(request: QuestionRequest):
         result = await answer_question(request.question)
         return QAResponse(
             answer=result.get("answer", "No answer generated."),
-            context=result.get("context", "No context retrieved.")
+            context=result.get("context", "No context retrieved."),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/index-pdf")
 async def index_pdf_endpoint(file: UploadFile = File(...)):
-    """Handle PDF upload and indexing into vector store."""
+    """Handle PDF upload and indexing into vector store (in-memory, no disk writes)."""
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-    
-    # Create temp directory if it doesn't exist
-    temp_dir = Path("temp_uploads")
-    temp_dir.mkdir(exist_ok=True)
-    
-    file_path = temp_dir / file.filename
+
     try:
-        # Save temp file
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # Index the document
-        num_chunks = index_documents(file_path)
-        
+        file_bytes = await file.read()
+        num_chunks = index_documents_from_bytes(file_bytes, filename=file.filename)
         return {
             "message": f"Successfully indexed {file.filename}",
-            "chunks": num_chunks
+            "chunks": num_chunks,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Cleanup
-        if file_path.exists():
-            file_path.unlink()
 
-# @app.get("/health")
-# async def health_check():
-#     """Health check endpoint."""
-#     return {"status": "ok"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    """Root endpoint for basic API info."""
+    return {
+        "name": "IKMS RAG Agent System",
+        "version": "1.0.0",
+        "endpoints": {
+            "qa": "POST /qa",
+            "index_pdf": "POST /index-pdf",
+            "health": "GET /health",
+        },
+    }
